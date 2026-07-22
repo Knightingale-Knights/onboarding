@@ -15,7 +15,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { file_url, type_name, thing_id, field_name, api_token, env } = req.body || {};
+  const { file_url, type_name, thing_id, field_name, api_token, env, document_label } = req.body || {};
 
   if (!file_url || !type_name || !thing_id || !api_token) {
     return res.status(400).json({
@@ -63,6 +63,10 @@ export default async function handler(req, res) {
                   type: ['string', 'null'],
                   description: 'Expiry date in YYYY-MM-DD format, or null if none is visible.',
                 },
+                matched_qualification: {
+                  type: 'string',
+                  description: 'The exact line/qualification on the document that expiry_date was taken from, e.g. "HLTAID009 - Provide cardiopulmonary resuscitation - 08/10/2026". If the document only has one date, describe that line.',
+                },
                 document_type: {
                   type: 'string',
                   description: "Best guess at the document type, e.g. 'drivers licence', 'passport', 'first aid certificate'.",
@@ -73,7 +77,7 @@ export default async function handler(req, res) {
                   description: 'Confidence that expiry_date is correct.',
                 },
               },
-              required: ['expiry_date', 'confidence'],
+              required: ['expiry_date', 'confidence', 'matched_qualification'],
             },
           },
         ],
@@ -83,7 +87,12 @@ export default async function handler(req, res) {
             role: 'user',
             content: [
               docBlock,
-              { type: 'text', text: 'Find the expiry date on this document and record it.' },
+              {
+                type: 'text',
+                text: document_label
+                  ? `This document may list several qualifications or fields, each with its own date. Find the expiry date specifically for: "${document_label}". Read every line first, then match by name/description — do not default to the first or most prominent date on the page if it belongs to a different item. Record which exact line you matched.`
+                  : 'Find the expiry date on this document and record it. If multiple dates appear, note which line each belongs to and pick the one that best represents the document\'s overall expiry.',
+              },
             ],
           },
         ],
@@ -98,7 +107,7 @@ export default async function handler(req, res) {
     const toolBlock = claudeData.content.find((b) => b.type === 'tool_use');
     if (!toolBlock) throw new Error('Claude did not return a structured result');
 
-    const { expiry_date, document_type, confidence } = toolBlock.input;
+    const { expiry_date, matched_qualification, document_type, confidence } = toolBlock.input;
 
     // Low confidence or no date found -> flag for manual review, don't write
     if (!expiry_date || confidence === 'low') {
@@ -106,6 +115,7 @@ export default async function handler(req, res) {
         success: false,
         needs_review: true,
         expiry_date: expiry_date || null,
+        matched_qualification,
         document_type,
         confidence,
       });
@@ -130,6 +140,7 @@ export default async function handler(req, res) {
       success: true,
       needs_review: false,
       expiry_date,
+      matched_qualification,
       document_type,
       confidence,
     });
