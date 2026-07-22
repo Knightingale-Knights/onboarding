@@ -35,6 +35,11 @@ export default async function handler(req, res) {
     const base64 = buffer.toString('base64');
 
     // 2. Ask Claude to extract the expiry date as structured JSON
+    const isPdf = mediaType.includes('pdf') || file_url.toLowerCase().includes('.pdf');
+    const docBlock = isPdf
+      ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }
+      : { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } };
+
     const claudeResp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -75,7 +80,7 @@ export default async function handler(req, res) {
           {
             role: 'user',
             content: [
-              { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+              docBlock,
               { type: 'text', text: 'Find the expiry date on this document and record it.' },
             ],
           },
@@ -104,14 +109,15 @@ export default async function handler(req, res) {
       });
     }
 
-    // 3. Write the date back onto the Bubble Thing
+    // 3. Write the date back onto the Bubble Thing (Bubble date fields expect ISO 8601)
+    const isoExpiry = new Date(`${expiry_date}T00:00:00.000Z`).toISOString();
     const bubbleResp = await fetch(`${BUBBLE_BASE}/${type_name}/${thing_id}`, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${api_token}`,
       },
-      body: JSON.stringify({ [targetField]: expiry_date }),
+      body: JSON.stringify({ [targetField]: isoExpiry }),
     });
 
     if (!bubbleResp.ok) {
