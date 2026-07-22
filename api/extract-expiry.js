@@ -25,10 +25,11 @@ export default async function handler(req, res) {
 
   const targetField = field_name || 'date';
   const BUBBLE_BASE = env === 'test' ? BUBBLE_TEST_BASE : BUBBLE_LIVE_BASE;
+  const fileUrl = file_url.startsWith('//') ? `https:${file_url}` : file_url;
 
   try {
     // 1. Fetch and base64-encode the document
-    const fileResp = await fetch(file_url);
+    const fileResp = await fetch(fileUrl);
     if (!fileResp.ok) {
       throw new Error(`Could not fetch file_url (${fileResp.status})`);
     }
@@ -37,7 +38,7 @@ export default async function handler(req, res) {
     const base64 = buffer.toString('base64');
 
     // 2. Ask Claude to extract the expiry date as structured JSON
-    const isPdf = mediaType.includes('pdf') || file_url.toLowerCase().includes('.pdf');
+    const isPdf = mediaType.includes('pdf') || fileUrl.toLowerCase().includes('.pdf');
     const docBlock = isPdf
       ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }
       : { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } };
