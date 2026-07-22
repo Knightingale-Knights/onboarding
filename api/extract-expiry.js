@@ -7,14 +7,15 @@
 //    (skipped if Claude's confidence is low, or no date is found — the caller
 //    gets needs_review: true instead so it can be routed for manual check)
 
-const BUBBLE_BASE = 'https://knightingale.com.au/api/1.1/obj';
+const BUBBLE_LIVE_BASE = 'https://knightingale.com.au/api/1.1/obj';
+const BUBBLE_TEST_BASE = 'https://knightingale.com.au/version-test/api/1.1/obj';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { file_url, type_name, thing_id, field_name, api_token } = req.body || {};
+  const { file_url, type_name, thing_id, field_name, api_token, env } = req.body || {};
 
   if (!file_url || !type_name || !thing_id || !api_token) {
     return res.status(400).json({
@@ -23,6 +24,7 @@ export default async function handler(req, res) {
   }
 
   const targetField = field_name || 'date';
+  const BUBBLE_BASE = env === 'test' ? BUBBLE_TEST_BASE : BUBBLE_LIVE_BASE;
 
   try {
     // 1. Fetch and base64-encode the document
