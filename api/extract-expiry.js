@@ -60,9 +60,17 @@ export default async function handler(req, res) {
             input_schema: {
               type: 'object',
               properties: {
+                is_expected_document_type: {
+                  type: 'boolean',
+                  description: 'True if the document genuinely matches the expected type described in the prompt (or true by default if no specific type was requested). False if it is clearly a different, unrelated document (e.g. a driver\'s licence or passport when a certificate was expected) that just happens to have some date on it.',
+                },
+                mismatch_reason: {
+                  type: 'string',
+                  description: 'If is_expected_document_type is false, briefly explain what the document actually appears to be instead. Omit if true.',
+                },
                 expiry_date: {
                   type: ['string', 'null'],
-                  description: 'Expiry date in YYYY-MM-DD format, or null if none is visible.',
+                  description: 'Expiry date in YYYY-MM-DD format, or null if none is visible or the document type does not match.',
                 },
                 matched_qualification: {
                   type: 'string',
@@ -70,7 +78,7 @@ export default async function handler(req, res) {
                 },
                 document_type: {
                   type: 'string',
-                  description: "Best guess at the document type, e.g. 'drivers licence', 'passport', 'first aid certificate'.",
+                  description: "Best guess at what the document actually is, e.g. 'drivers licence', 'passport', 'first aid certificate'.",
                 },
                 confidence: {
                   type: 'string',
@@ -78,7 +86,7 @@ export default async function handler(req, res) {
                   description: 'Confidence that expiry_date is correct.',
                 },
               },
-              required: ['expiry_date', 'confidence', 'matched_qualification'],
+              required: ['is_expected_document_type', 'expiry_date', 'confidence', 'matched_qualification'],
             },
           },
         ],
@@ -91,8 +99,14 @@ export default async function handler(req, res) {
               {
                 type: 'text',
                 text: document_label
-                  ? `This document may list several qualifications or fields, each with its own date. Find the expiry date specifically for: "${document_label}". Read every line first, then match by name/description — do not default to the first or most prominent date on the page if it belongs to a different item. Record which exact line you matched.`
-                  : 'Find the expiry date on this document and record it. If multiple dates appear, note which line each belongs to and pick the one that best represents the document\'s overall expiry.',
+                  ? `You are verifying an uploaded document against an expected type: "${document_label}".
+
+First, check whether this document genuinely appears to be a certificate, statement, or card that would contain this qualification — not a different, unrelated document (e.g. a driver's licence, passport, or a different certificate entirely) that simply happens to have a date on it somewhere.
+
+If it does NOT match, set is_expected_document_type to false, briefly explain what it actually is in mismatch_reason, and set expiry_date to null.
+
+If it DOES match: this document may list several qualifications, each with its own date. Read every line first, then find the expiry date that specifically corresponds to "${document_label}" — do not default to the first or most prominent date on the page if it belongs to a different item. Record which exact line you matched.`
+                  : 'Set is_expected_document_type to true. Find the expiry date on this document and record it. If multiple dates appear, note which line each belongs to and pick the one that best represents the document\'s overall expiry.',
               },
             ],
           },
@@ -108,7 +122,19 @@ export default async function handler(req, res) {
     const toolBlock = claudeData.content.find((b) => b.type === 'tool_use');
     if (!toolBlock) throw new Error('Claude did not return a structured result');
 
-    const { expiry_date, matched_qualification, document_type, confidence } = toolBlock.input;
+    const { is_expected_document_type, mismatch_reason, expiry_date, matched_qualification, document_type, confidence } = toolBlock.input;
+
+    // Wrong kind of document entirely -> flag for review, don't write
+    if (!is_expected_document_type) {
+      return res.status(200).json({
+        success: false,
+        needs_review: true,
+        reason: 'document_type_mismatch',
+        mismatch_reason,
+        document_type,
+        expiry_date: null,
+      });
+    }
 
     // Low confidence or no date found -> flag for manual review, don't write
     if (!expiry_date || confidence === 'low') {
