@@ -126,17 +126,32 @@ If it DOES match: this document may list several qualifications, each with its o
     const toolBlock = claudeData.content.find((b) => b.type === 'tool_use');
     if (!toolBlock) throw new Error('Claude did not return a structured result');
 
+    // Every response returns this same set of keys (null where not applicable),
+    // so Bubble's Initialize call captures the full schema no matter which
+    // branch happens to run on the test — instead of a different subset each time.
+    const respond = (overrides) =>
+      res.status(200).json({
+        success: false,
+        needs_review: true,
+        reason: null,
+        mismatch_reason: null,
+        document_type: null,
+        expiry_date: null,
+        expiry_source: null,
+        issue_date: null,
+        matched_qualification: null,
+        confidence: null,
+        ...overrides,
+      });
+
     const { is_expected_document_type, mismatch_reason, expiry_date, issue_date, matched_qualification, document_type, confidence } = toolBlock.input;
 
     // Wrong kind of document entirely -> flag for review, don't write
     if (!is_expected_document_type) {
-      return res.status(200).json({
-        success: false,
-        needs_review: true,
+      return respond({
         reason: 'document_type_mismatch',
         mismatch_reason,
         document_type,
-        expiry_date: null,
       });
     }
 
@@ -155,9 +170,7 @@ If it DOES match: this document may list several qualifications, each with its o
 
     // Still nothing usable -> flag for manual review, don't write
     if (!finalExpiryDate || (expirySource === 'printed' && confidence === 'low')) {
-      return res.status(200).json({
-        success: false,
-        needs_review: true,
+      return respond({
         expiry_date: finalExpiryDate || null,
         issue_date,
         matched_qualification,
@@ -181,7 +194,7 @@ If it DOES match: this document may list several qualifications, each with its o
       throw new Error(`Bubble Data API error (${bubbleResp.status}): ${await bubbleResp.text()}`);
     }
 
-    return res.status(200).json({
+    return respond({
       success: true,
       needs_review: false,
       expiry_date: finalExpiryDate,
