@@ -15,7 +15,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { file_url, type_name, thing_id, field_name, api_token, env, document_label } = req.body || {};
+  const { file_url, type_name, thing_id, field_name, api_token, env, document_label, fallback_expiry_months } = req.body || {};
 
   if (!file_url || !type_name || !thing_id || !api_token) {
     return res.status(400).json({
@@ -62,7 +62,7 @@ export default async function handler(req, res) {
               properties: {
                 is_expected_document_type: {
                   type: 'boolean',
-                  description: 'True if the document genuinely matches the expected type described in the prompt (or true by default if no specific type was requested). False if it is clearly a different, unrelated document (e.g. a driver\'s licence or passport when a certificate was expected) that just happens to have some date on it.',
+                  description: 'True if the document contains the qualification/type described in document_label anywhere on it — including when it\'s a combined certificate listing several qualifications together (e.g. First Aid + CPR + Basic Life Support on one Statement of Attainment). False only if the document is clearly a different, unrelated document (e.g. a driver\'s licence or passport when a certificate was expected) that does not contain the expected qualification at all.',
                 },
                 mismatch_reason: {
                   type: 'string',
@@ -70,7 +70,11 @@ export default async function handler(req, res) {
                 },
                 expiry_date: {
                   type: ['string', 'null'],
-                  description: 'Expiry date in YYYY-MM-DD format, or null if none is visible or the document type does not match.',
+                  description: 'Expiry date in YYYY-MM-DD format, taken ONLY from a date explicitly printed on the document as an expiry, valid-until, or renewal-due date. Never calculate or infer this from an issue date plus a stated renewal period (e.g. "renew annually") — if no explicit expiry date is printed, this must be null even if an issue date or renewal guidance is present.',
+                },
+                issue_date: {
+                  type: ['string', 'null'],
+                  description: 'The issue/completion/attainment date in YYYY-MM-DD format, ONLY if explicitly printed on the document (e.g. "Issue Date: 28 September 2023"). Null if not printed. Report this even when expiry_date is also found.',
                 },
                 matched_qualification: {
                   type: 'string',
@@ -101,12 +105,12 @@ export default async function handler(req, res) {
                 text: document_label
                   ? `You are verifying an uploaded document against an expected type: "${document_label}".
 
-First, check whether this document genuinely appears to be a certificate, statement, or card that would contain this qualification — not a different, unrelated document (e.g. a driver's licence, passport, or a different certificate entirely) that simply happens to have a date on it somewhere.
+First, check whether this document genuinely appears to be a certificate, statement, or card that would contain this qualification — not a different, unrelated document (e.g. a driver's licence, passport, or a different certificate entirely) that simply happens to have a date on it somewhere. Training providers often issue a single combined "Statement of Attainment" listing several separate qualifications together (e.g. First Aid, CPR, and Basic Life Support on the same certificate) — this is normal. Do NOT reject it as a mismatch just because it also lists other, unrelated qualifications, or because its overall title/heading doesn't literally say the expected type. What matters is whether the specific qualification described in "${document_label}" is listed anywhere on the document.
 
 If it does NOT match, set is_expected_document_type to false, briefly explain what it actually is in mismatch_reason, and set expiry_date to null.
 
-If it DOES match: this document may list several qualifications, each with its own date. Read every line first, then find the expiry date that specifically corresponds to "${document_label}" — do not default to the first or most prominent date on the page if it belongs to a different item. Record which exact line you matched.`
-                  : 'Set is_expected_document_type to true. Find the expiry date on this document and record it. If multiple dates appear, note which line each belongs to and pick the one that best represents the document\'s overall expiry.',
+If it DOES match: this document may list several qualifications, each with its own date. Read every line first, then find the expiry date that specifically corresponds to "${document_label}" — do not default to the first or most prominent date on the page if it belongs to a different item. Only use a date that is explicitly printed as an expiry/valid-until/renewal-due date — never calculate one from an issue date plus a stated renewal period (e.g. "renew annually"). If no explicit expiry date is printed, set expiry_date to null and confidence to low, even if an issue date is shown. Separately, also report issue_date if the document explicitly prints an issue/completion/attainment date, even when an expiry date was also found. Record which exact line you matched.`
+                  : 'Set is_expected_document_type to true. Find the expiry date on this document and record it — only if it is explicitly printed as an expiry/valid-until date, never calculated from an issue date plus a renewal period. Also report issue_date if one is explicitly printed. If multiple dates appear, note which line each belongs to and pick the one that best represents the document\'s overall expiry. If no explicit expiry date is printed, return null and confidence low.',
               },
             ],
           },
@@ -122,7 +126,7 @@ If it DOES match: this document may list several qualifications, each with its o
     const toolBlock = claudeData.content.find((b) => b.type === 'tool_use');
     if (!toolBlock) throw new Error('Claude did not return a structured result');
 
-    const { is_expected_document_type, mismatch_reason, expiry_date, matched_qualification, document_type, confidence } = toolBlock.input;
+    const { is_expected_document_type, mismatch_reason, expiry_date, issue_date, matched_qualification, document_type, confidence } = toolBlock.input;
 
     // Wrong kind of document entirely -> flag for review, don't write
     if (!is_expected_document_type) {
@@ -136,12 +140,26 @@ If it DOES match: this document may list several qualifications, each with its o
       });
     }
 
-    // Low confidence or no date found -> flag for manual review, don't write
-    if (!expiry_date || confidence === 'low') {
+    // No printed expiry, but an issue date + fallback renewal period was given ->
+    // calculate the expiry deterministically in code (never trust an LLM to do date math)
+    let finalExpiryDate = expiry_date;
+    let expirySource = expiry_date ? 'printed' : null;
+
+    if (!finalExpiryDate && issue_date && fallback_expiry_months) {
+      const months = Number(fallback_expiry_months);
+      const d = new Date(`${issue_date}T00:00:00.000Z`);
+      d.setUTCMonth(d.getUTCMonth() + months);
+      finalExpiryDate = d.toISOString().slice(0, 10);
+      expirySource = 'calculated_from_issue_date';
+    }
+
+    // Still nothing usable -> flag for manual review, don't write
+    if (!finalExpiryDate || (expirySource === 'printed' && confidence === 'low')) {
       return res.status(200).json({
         success: false,
         needs_review: true,
-        expiry_date: expiry_date || null,
+        expiry_date: finalExpiryDate || null,
+        issue_date,
         matched_qualification,
         document_type,
         confidence,
@@ -149,7 +167,7 @@ If it DOES match: this document may list several qualifications, each with its o
     }
 
     // 3. Write the date back onto the Bubble Thing (Bubble date fields expect ISO 8601)
-    const isoExpiry = new Date(`${expiry_date}T00:00:00.000Z`).toISOString();
+    const isoExpiry = new Date(`${finalExpiryDate}T00:00:00.000Z`).toISOString();
     const bubbleResp = await fetch(`${BUBBLE_BASE}/${type_name}/${thing_id}`, {
       method: 'PATCH',
       headers: {
@@ -166,7 +184,9 @@ If it DOES match: this document may list several qualifications, each with its o
     return res.status(200).json({
       success: true,
       needs_review: false,
-      expiry_date,
+      expiry_date: finalExpiryDate,
+      expiry_source: expirySource,
+      issue_date,
       matched_qualification,
       document_type,
       confidence,
