@@ -15,7 +15,16 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { file_url, type_name, thing_id, field_name, api_token, env, document_label, fallback_expiry_months } = req.body || {};
+  const clean = (v) => (v === undefined || v === null || v === 'null' || v === 'undefined' || v === '' ? undefined : v);
+  const body = req.body || {};
+  const file_url = clean(body.file_url);
+  const type_name = clean(body.type_name);
+  const thing_id = clean(body.thing_id);
+  const field_name = clean(body.field_name);
+  const api_token = clean(body.api_token);
+  const env = clean(body.env);
+  const document_label = clean(body.document_label);
+  const fallback_expiry_months = clean(body.fallback_expiry_months);
 
   if (!file_url || !type_name || !thing_id || !api_token) {
     return res.status(400).json({
