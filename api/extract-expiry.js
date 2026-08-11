@@ -245,7 +245,7 @@ If it DOES match: this document may list several qualifications, each with its o
 
     if (isExpired) {
       return respond({
-        success: true,
+        success: false,
         needs_review: true,
         reason: 'expired',
         mismatch_reason: `This document is genuine but expired on ${finalExpiryDate}. An updated certificate is required.`,
